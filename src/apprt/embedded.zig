@@ -1726,6 +1726,72 @@ pub const CAPI = struct {
         ptr.deinit();
     }
 
+    /// Read the viewport text from a specific tmux pane.
+    ///
+    /// Pass a tmux pane ID to read that pane's viewport text. Pass
+    /// `std.math.maxInt(usize)` (i.e. `(uintptr_t)-1` from C) to read
+    /// the first available pane (convenience for Phase 1).
+    ///
+    /// Returns true if tmux control mode is active and text was
+    /// successfully read. The caller must call ghostty_surface_free_text
+    /// on the result when done. After receiving a tmux_state EXIT action,
+    /// the caller must not call this function again until the next ENTER.
+    export fn ghostty_surface_tmux_pane_text(
+        surface: *Surface,
+        pane_id: usize,
+        result: *Text,
+    ) bool {
+        const core_surface = &surface.core_surface;
+
+        // Lock the renderer state mutex. The stream handler uses this
+        // same mutex when modifying the tmux_viewer, so this ensures
+        // thread-safe access.
+        core_surface.renderer_state.mutex.lock();
+        defer core_surface.renderer_state.mutex.unlock();
+
+        const StreamHandler = @import("../termio/stream_handler.zig").StreamHandler;
+
+        // Check if tmux control mode is enabled at compile time
+        if (comptime !StreamHandler.tmux_enabled) return false;
+
+        // Get the tmux viewer from the stream handler
+        const viewer = core_surface.io.terminal_stream.handler.tmux_viewer orelse return false;
+
+        // Look up the pane by ID, or fall back to the first available pane
+        const pane = if (pane_id == std.math.maxInt(usize))
+            blk: {
+                var it = viewer.panes.iterator();
+                const entry = it.next() orelse return false;
+                break :blk entry.value_ptr;
+            }
+        else
+            viewer.panes.getPtr(pane_id) orelse return false;
+
+        const screen = pane.terminal.screens.active;
+
+        // Create a selection spanning the full viewport
+        const tl = screen.pages.getTopLeft(.viewport);
+        const br = screen.pages.getBottomRight(.viewport) orelse return false;
+        const sel = terminal.Selection.init(tl, br, false);
+
+        // Extract viewport text as a null-terminated string
+        const text = screen.selectionString(global.alloc, .{
+            .sel = sel,
+            .trim = false,
+        }) catch return false;
+
+        result.* = .{
+            .tl_px_x = -1,
+            .tl_px_y = -1,
+            .offset_start = 0,
+            .offset_len = 0,
+            .text = text.ptr,
+            .text_len = text.len,
+        };
+
+        return true;
+    }
+
     /// Tell the surface that it needs to schedule a render
     export fn ghostty_surface_refresh(surface: *Surface) void {
         surface.refresh();

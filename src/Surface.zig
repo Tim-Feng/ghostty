@@ -1181,6 +1181,16 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
                 .{ .selected = v },
             );
         },
+
+        .tmux_state => |entered| {
+            _ = self.rt_app.performAction(
+                .{ .surface = self },
+                .tmux_state,
+                if (entered) .enter else .exit,
+            ) catch |err| {
+                log.warn("apprt failed to notify tmux state err={}", .{err});
+            };
+        },
     }
 }
 

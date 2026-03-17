@@ -391,10 +391,16 @@ pub const StreamHandler = struct {
                         viewer.* = try .init(self.alloc);
                         errdefer viewer.deinit();
                         self.tmux_viewer = viewer;
+
+                        // Notify the apprt that we entered tmux control mode
+                        self.surfaceMessageWriter(.{ .tmux_state = true });
                         break :tmux;
                     },
 
                     .exit => {
+                        // Notify the apprt that we exited tmux control mode
+                        self.surfaceMessageWriter(.{ .tmux_state = false });
+
                         // Free our viewer state if we have one
                         if (self.tmux_viewer) |viewer| {
                             viewer.deinit();

@@ -340,6 +340,12 @@ pub const Action = union(Key) {
     /// otherwise the terminal-set title.
     copy_title_to_clipboard,
 
+    /// Tmux control mode entered or exited. When the terminal enters
+    /// tmux control mode, this action is sent to the apprt. The apprt
+    /// can use this to change behavior, such as switching link detection
+    /// to use tmux pane text instead of the viewport render state.
+    tmux_state: TmuxState,
+
     /// Sync with: ghostty_action_tag_e
     pub const Key = enum(c_int) {
         quit,
@@ -406,6 +412,7 @@ pub const Action = union(Key) {
         search_selected,
         readonly,
         copy_title_to_clipboard,
+        tmux_state,
 
         test "ghostty.h Action.Key" {
             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");
@@ -621,6 +628,15 @@ pub const Readonly = enum(c_int) {
 
     test "ghostty.h Readonly" {
         try lib.checkGhosttyHEnum(Readonly, "GHOSTTY_READONLY_");
+    }
+};
+
+pub const TmuxState = enum(c_int) {
+    enter,
+    exit,
+
+    test "ghostty.h TmuxState" {
+        try lib.checkGhosttyHEnum(TmuxState, "GHOSTTY_TMUX_STATE_");
     }
 };
 
