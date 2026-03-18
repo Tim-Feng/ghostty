@@ -1769,16 +1769,22 @@ pub const CAPI = struct {
 
         const screen = pane.terminal.screens.active;
 
-        // Create a selection spanning the full viewport
+        // Dump viewport text preserving visual line breaks (unwrap=false).
+        // This keeps one line per terminal row so the caller can map
+        // click row → text line.
         const tl = screen.pages.getTopLeft(.viewport);
         const br = screen.pages.getBottomRight(.viewport) orelse return false;
-        const sel = terminal.Selection.init(tl, br, false);
 
-        // Extract viewport text as a null-terminated string
-        const text = screen.selectionString(global.alloc, .{
-            .sel = sel,
-            .trim = false,
+        var builder: std.Io.Writer.Allocating = .init(global.alloc);
+        defer builder.deinit();
+        screen.dumpString(&builder.writer, .{
+            .tl = tl,
+            .br = br,
+            .unwrap = false,
         }) catch return false;
+
+        // Add null terminator
+        const text = builder.toOwnedSliceSentinel(0) catch return false;
 
         result.* = .{
             .tl_px_x = -1,
