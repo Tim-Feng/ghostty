@@ -82,6 +82,26 @@ pub const Message = union(enum) {
     /// Write where the data is allocated and must be freed.
     write_alloc: WriteReq.Alloc,
 
+    /// Register a tmux pane surface for %output routing. The host I/O
+    /// thread will feed tmux output for this pane to the given Termio.
+    tmux_register_pane: TmuxPaneReg,
+
+    /// Unregister a tmux pane surface. After removal, the host I/O
+    /// thread sends a tmux_pane_unregistered surface message as ack
+    /// containing the same reg_id so the caller can match it.
+    tmux_unregister_pane: TmuxPaneUnreg,
+
+    pub const TmuxPaneReg = struct {
+        pane_id: usize,
+        reg_id: u32,
+        pane_termio: *termio.Termio,
+    };
+
+    pub const TmuxPaneUnreg = struct {
+        pane_id: usize,
+        reg_id: u32,
+    };
+
     /// Return a write request for the given data. This will use
     /// write_small if it fits or write_alloc otherwise. This should NOT
     /// be used for stable pointers which can be manually set to write_stable.

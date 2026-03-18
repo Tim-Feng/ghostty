@@ -73,6 +73,11 @@ pub const StreamHandler = struct {
     /// The tmux control mode viewer state.
     tmux_viewer: if (tmux_enabled) ?*terminal.tmux.Viewer else void = if (tmux_enabled) null else {},
 
+    /// Registered tmux pane surfaces for %output routing.
+    /// Maps pane_id → (Termio ptr + registration ID). Only accessed on the I/O thread.
+    tmux_pane_surfaces: if (tmux_enabled) std.AutoArrayHashMapUnmanaged(usize, TmuxPaneEntry) else void =
+        if (tmux_enabled) .{} else {},
+
     /// This is set to true when a message was written to the termio
     /// mailbox. This can be used by callers to determine if they need
     /// to wake up the termio thread.
@@ -87,15 +92,76 @@ pub const StreamHandler = struct {
     /// True if we have tmux control mode built in.
     pub const tmux_enabled = terminal.options.tmux_control_mode;
 
+    /// Entry in the tmux pane surfaces map.
+    pub const TmuxPaneEntry = struct { termio_ptr: *termio.Termio, reg_id: u32 };
+
     pub fn deinit(self: *StreamHandler) void {
         self.apc.deinit();
         self.dcs.deinit();
-        if (comptime tmux_enabled) tmux: {
-            const viewer = self.tmux_viewer orelse break :tmux;
-            viewer.deinit();
-            self.alloc.destroy(viewer);
-            self.tmux_viewer = null;
+        if (comptime tmux_enabled) {
+            self.tmux_pane_surfaces.deinit(self.alloc);
+            if (self.tmux_viewer) |viewer| {
+                viewer.deinit();
+                self.alloc.destroy(viewer);
+                self.tmux_viewer = null;
+            }
         }
+    }
+
+    /// Register a tmux pane surface for %output routing.
+    /// Called on the I/O thread via termio message.
+    pub fn tmuxRegisterPane(self: *StreamHandler, pane_id: usize, reg_id: u32, pane_termio: *termio.Termio) void {
+        if (comptime !tmux_enabled) return;
+        self.tmux_pane_surfaces.put(self.alloc, pane_id, .{ .termio_ptr = pane_termio, .reg_id = reg_id }) catch |err| {
+            log.err("failed to register tmux pane surface pane_id={} err={}", .{ pane_id, err });
+            return;
+        };
+        log.info("tmux pane surface registered pane_id={} reg_id={}", .{ pane_id, reg_id });
+
+        // MVP initial sync: dump plain viewport text from the viewer's pane
+        // terminal to the new surface. This is text-only (no colors, cursor,
+        // modes, scrollback). Panes will look correct after the first %output
+        // from tmux brings them up to date.
+        //
+        // TODO: Replace with capture-pane -p -e routing or terminal state
+        // clone for full-fidelity initial sync (colors, cursor, modes).
+        const viewer = self.tmux_viewer orelse return;
+        const pane = viewer.panes.getPtr(pane_id) orelse return;
+        const screen = pane.terminal.screens.active;
+        const tl = screen.pages.getTopLeft(.viewport);
+        const br = screen.pages.getBottomRight(.viewport) orelse return;
+        var builder: std.Io.Writer.Allocating = .init(self.alloc);
+        defer builder.deinit();
+        screen.dumpString(&builder.writer, .{
+            .tl = tl,
+            .br = br,
+            .unwrap = false,
+        }) catch return;
+        const dump = builder.toOwnedSlice() catch return;
+        defer self.alloc.free(dump);
+        if (dump.len > 0) {
+            pane_termio.processOutput(dump);
+            log.info("tmux pane initial sync (text-only MVP) pane_id={} bytes={}", .{ pane_id, dump.len });
+        }
+    }
+
+    /// Unregister a tmux pane surface and send ack with reg_id.
+    /// Called on the I/O thread via termio message.
+    /// Only removes the mapping if the stored reg_id matches (guards
+    /// against races where a new pane reuses the same pane_id).
+    pub fn tmuxUnregisterPane(self: *StreamHandler, pane_id: usize, reg_id: u32) void {
+        if (comptime !tmux_enabled) return;
+        if (self.tmux_pane_surfaces.getPtr(pane_id)) |entry| {
+            if (entry.reg_id != reg_id) {
+                log.info("tmux pane unregister skipped (stale reg_id) pane_id={} expected={} got={}", .{ pane_id, entry.reg_id, reg_id });
+                // Still ack so Swift doesn't leak — but the mapping stays for the new registration.
+                self.surfaceMessageWriter(.{ .tmux_pane_unregistered = .{ .pane_id = pane_id, .reg_id = reg_id } });
+                return;
+            }
+            _ = self.tmux_pane_surfaces.swapRemove(pane_id);
+        }
+        log.info("tmux pane surface unregistered pane_id={} reg_id={}", .{ pane_id, reg_id });
+        self.surfaceMessageWriter(.{ .tmux_pane_unregistered = .{ .pane_id = pane_id, .reg_id = reg_id } });
     }
 
     /// This queues a render operation with the renderer thread. The render
@@ -430,6 +496,18 @@ pub const StreamHandler = struct {
                     break :tmux;
                 };
 
+                // Route %output to registered pane surfaces before
+                // the viewer processes it (viewer also feeds its own
+                // pane terminal, which is intentional redundancy).
+                if (tmux == .output) {
+                    if (self.tmux_pane_surfaces.getPtr(tmux.output.pane_id)) |entry| {
+                        log.info("tmux routing %output to pane surface pane_id={} bytes={}", .{ tmux.output.pane_id, tmux.output.data.len });
+                        entry.termio_ptr.processOutput(tmux.output.data);
+                    } else {
+                        log.info("tmux %output pane_id={} not registered (registered count={})", .{ tmux.output.pane_id, self.tmux_pane_surfaces.count() });
+                    }
+                }
+
                 for (viewer.next(.{ .tmux = tmux })) |action| {
                     log.info("tmux viewer action={f}", .{action});
                     switch (action) {
@@ -450,7 +528,7 @@ pub const StreamHandler = struct {
                         },
 
                         .windows => {
-                            // TODO
+                            self.surfaceMessageWriter(.{ .tmux_windows_changed = {} });
                         },
                     }
                 }

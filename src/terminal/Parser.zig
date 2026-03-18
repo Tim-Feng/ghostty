@@ -265,13 +265,19 @@ pub fn next(self: *Parser, c: u8) [3]?Action {
     // bytes (ESC→escape, 0x80-0x8F→ground, 0x9B→csi_entry, etc.), which
     // prematurely unhooks the DCS and kills the tmux control session.
     //
+    // Additionally, bytes 0xA0-0xFF have no explicit "anywhere" transition,
+    // so they stay in dcs_passthrough but with a .none action — silently
+    // dropping them. These include UTF-8 leading bytes (0xC0-0xFF) and
+    // continuation bytes (0xA0-0xBF) that tmux sends raw in %output.
+    //
     // This override ONLY applies to tmux DCS 1000p (identified at entry).
     // Non-tmux DCS (XTGETTCAP, DECRQSS, etc.) use standard VT transitions.
     // The tmux control parser (control.zig) handles its own protocol framing
     // and will return .exit when the connection should end, which triggers
     // dcs_unhook via the stream handler.
     const next_state, const action = if (self.tmux_dcs and
-        self.state == .dcs_passthrough and effect.state != .dcs_passthrough)
+        self.state == .dcs_passthrough and
+        (effect.state != .dcs_passthrough or effect.action == .none))
         .{ State.dcs_passthrough, TransitionAction.put }
     else
         .{ effect.state, effect.action };

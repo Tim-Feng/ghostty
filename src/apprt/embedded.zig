@@ -1798,6 +1798,157 @@ pub const CAPI = struct {
         return true;
     }
 
+    /// Tmux pane info for the C API. Represents a leaf pane in the
+    /// tmux layout tree with its position and dimensions in cells.
+    pub const TmuxPaneInfo = extern struct {
+        window_id: usize,
+        pane_id: usize,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+    };
+
+    /// Query the current tmux pane topology. Returns the number of
+    /// panes written to `out`. If `out` is null, returns the total
+    /// pane count without writing.
+    ///
+    /// The caller should first call with out=null to get the count,
+    /// allocate an array, then call again with out pointing to it.
+    export fn ghostty_surface_tmux_panes(
+        surface: *Surface,
+        out: ?[*]TmuxPaneInfo,
+        max_count: usize,
+    ) usize {
+        const core_surface = &surface.core_surface;
+
+        core_surface.renderer_state.mutex.lock();
+        defer core_surface.renderer_state.mutex.unlock();
+
+        const StreamHandler = @import("../termio/stream_handler.zig").StreamHandler;
+        if (comptime !StreamHandler.tmux_enabled) return 0;
+
+        const viewer = core_surface.io.terminal_stream.handler.tmux_viewer orelse return 0;
+
+        var count: usize = 0;
+        for (viewer.windows.items) |window| {
+            count = flattenLayout(window.id, window.layout, out, max_count, count);
+        }
+        return count;
+    }
+
+    /// Recursively flatten a tmux Layout tree into leaf pane entries.
+    fn flattenLayout(
+        window_id: usize,
+        layout: @import("../terminal/tmux/layout.zig").Layout,
+        out: ?[*]TmuxPaneInfo,
+        max_count: usize,
+        offset: usize,
+    ) usize {
+        var count = offset;
+        switch (layout.content) {
+            .pane => |pane_id| {
+                if (out) |buf| {
+                    if (count < max_count) {
+                        buf[count] = .{
+                            .window_id = window_id,
+                            .pane_id = pane_id,
+                            .x = @intCast(layout.x),
+                            .y = @intCast(layout.y),
+                            .width = @intCast(layout.width),
+                            .height = @intCast(layout.height),
+                        };
+                    }
+                }
+                count += 1;
+            },
+            .horizontal, .vertical => |children| {
+                for (children) |child| {
+                    count = flattenLayout(window_id, child, out, max_count, count);
+                }
+            },
+        }
+        return count;
+    }
+
+    /// Register a tmux pane surface for %output routing on the host
+    /// surface's I/O thread. After registration, tmux %output for
+    /// this pane_id will be fed to the pane surface via processOutput.
+    /// The registration also performs initial sync (dumping viewer's
+    /// pane terminal content to the new surface).
+    export fn ghostty_surface_tmux_register_pane(
+        host_surface: *Surface,
+        pane_id: usize,
+        reg_id: u32,
+        pane_surface: *Surface,
+    ) void {
+        host_surface.core_surface.io.queueMessage(.{
+            .tmux_register_pane = .{
+                .pane_id = pane_id,
+                .reg_id = reg_id,
+                .pane_termio = &pane_surface.core_surface.io,
+            },
+        }, .unlocked);
+    }
+
+    /// Unregister a tmux pane surface. The I/O thread will remove the
+    /// mapping only if reg_id matches, then send a tmux_pane_unregistered
+    /// action as ack. Caller must NOT destroy pane surface until ack.
+    export fn ghostty_surface_tmux_unregister_pane(
+        host_surface: *Surface,
+        pane_id: usize,
+        reg_id: u32,
+    ) void {
+        host_surface.core_surface.io.queueMessage(.{
+            .tmux_unregister_pane = .{
+                .pane_id = pane_id,
+                .reg_id = reg_id,
+            },
+        }, .unlocked);
+    }
+
+    /// Send keys to a tmux pane via control mode. key_type determines
+    /// whether data is literal text (send-keys -l) or a tmux key name.
+    /// 0 = literal text, 1 = key name.
+    export fn ghostty_surface_tmux_send_keys(
+        host_surface: *Surface,
+        pane_id: usize,
+        data_ptr: [*]const u8,
+        data_len: usize,
+        key_type: c_int,
+    ) void {
+        const data = data_ptr[0..data_len];
+
+        // Build the send-keys command
+        var buf: [512]u8 = undefined;
+        var stream = std.io.fixedBufferStream(&buf);
+        const writer = stream.writer();
+
+        if (key_type == 0) {
+            // Literal text: send-keys -l -t %<pane_id> "<text>"
+            writer.print("send-keys -l -t %{d} \"", .{pane_id}) catch return;
+            // Escape double quotes and backslashes in the text
+            for (data) |byte| {
+                switch (byte) {
+                    '"' => writer.writeAll("\\\"") catch return,
+                    '\\' => writer.writeAll("\\\\") catch return,
+                    else => writer.writeByte(byte) catch return,
+                }
+            }
+            writer.writeAll("\"\n") catch return;
+        } else {
+            // Key name: send-keys -t %<pane_id> <key_name>
+            writer.print("send-keys -t %{d} {s}\n", .{ pane_id, data }) catch return;
+        }
+
+        const cmd = stream.getWritten();
+        const Message = @import("../termio/message.zig").Message;
+        host_surface.core_surface.io.queueMessage(
+            Message.writeReq(host_surface.core_surface.alloc, cmd) catch return,
+            .unlocked,
+        );
+    }
+
     /// Tell the surface that it needs to schedule a render
     export fn ghostty_surface_refresh(surface: *Surface) void {
         surface.refresh();

@@ -196,7 +196,12 @@ pub const Parser = struct {
                 line[@intCast(starts[1])..@intCast(ends[1])],
                 10,
             ) catch unreachable;
-            const data = line[@intCast(starts[2])..@intCast(ends[2])];
+            const raw = line[@intCast(starts[2])..@intCast(ends[2])];
+
+            // tmux control mode escapes non-printable bytes as octal
+            // (e.g. \010 for BS, \033 for ESC). Unescape in-place since
+            // the result is always <= the input length.
+            const data = unescapeTmuxOctal(raw);
 
             // Important: do not clear buffer here since name points to it
             self.state = .idle;
@@ -556,6 +561,60 @@ pub const Notification = union(enum) {
     }
 };
 
+/// Unescape tmux control mode octal encoding in-place.
+/// tmux escapes non-printable bytes as \ooo (3-digit octal) and
+/// literal backslash as \\. The result is always <= input length.
+fn unescapeTmuxOctal(data: []const u8) []u8 {
+    // data points into parser.buffer which is mutable
+    const buf: [*]u8 = @constCast(data.ptr);
+    var r: usize = 0;
+    var w: usize = 0;
+    while (r < data.len) {
+        if (data[r] == '\\' and r + 3 < data.len and
+            data[r + 1] >= '0' and data[r + 1] <= '3' and
+            data[r + 2] >= '0' and data[r + 2] <= '7' and
+            data[r + 3] >= '0' and data[r + 3] <= '7')
+        {
+            // Octal escape: \ooo
+            const val: u8 = (data[r + 1] - '0') * 64 +
+                (data[r + 2] - '0') * 8 +
+                (data[r + 3] - '0');
+            buf[w] = val;
+            w += 1;
+            r += 4;
+        } else if (data[r] == '\\' and r + 1 < data.len and data[r + 1] == '\\') {
+            // Escaped backslash
+            buf[w] = '\\';
+            w += 1;
+            r += 2;
+        } else {
+            buf[w] = data[r];
+            w += 1;
+            r += 1;
+        }
+    }
+    return buf[0..w];
+}
+
+test "unescape tmux octal" {
+    const testing = std.testing;
+    // Basic octal: \010 = 0x08 (backspace)
+    var buf1 = "hello\\010world".*;
+    try testing.expectEqualStrings("hello\x08world", unescapeTmuxOctal(&buf1));
+    // Escaped backslash
+    var buf2 = "a\\\\b".*;
+    try testing.expectEqualStrings("a\\b", unescapeTmuxOctal(&buf2));
+    // ESC: \033 = 0x1B
+    var buf3 = "\\033[31m".*;
+    try testing.expectEqualStrings("\x1b[31m", unescapeTmuxOctal(&buf3));
+    // No escapes
+    var buf4 = "plain text".*;
+    try testing.expectEqualStrings("plain text", unescapeTmuxOctal(&buf4));
+    // Mixed
+    var buf5 = "\\015\\012".*;
+    try testing.expectEqualStrings("\r\n", unescapeTmuxOctal(&buf5));
+}
+
 test "tmux begin/end empty" {
     const testing = std.testing;
     const alloc = testing.allocator;
@@ -607,6 +666,20 @@ test "tmux output" {
     try testing.expect(n == .output);
     try testing.expectEqual(42, n.output.pane_id);
     try testing.expectEqualStrings("foo bar baz", n.output.data);
+}
+
+test "tmux output with octal escapes" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var c: Parser = .{ .buffer = .init(alloc) };
+    defer c.deinit();
+    // \033[31m = ESC[31m (red text), \010 = backspace
+    for ("%output %7 \\033[31mhello\\010") |byte| try testing.expect(try c.put(byte) == null);
+    const n = (try c.put('\n')).?;
+    try testing.expect(n == .output);
+    try testing.expectEqual(7, n.output.pane_id);
+    try testing.expectEqualStrings("\x1b[31mhello\x08", n.output.data);
 }
 
 test "tmux session-changed" {

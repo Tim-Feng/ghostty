@@ -351,6 +351,12 @@ fn drainMailbox(
                     self.flags.linefeed_mode,
                 );
             },
+            .tmux_register_pane => |v| {
+                io.terminal_stream.handler.tmuxRegisterPane(v.pane_id, v.reg_id, v.pane_termio);
+            },
+            .tmux_unregister_pane => |v| {
+                io.terminal_stream.handler.tmuxUnregisterPane(v.pane_id, v.reg_id);
+            },
         }
     }
 

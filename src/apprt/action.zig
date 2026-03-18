@@ -346,6 +346,15 @@ pub const Action = union(Key) {
     /// to use tmux pane text instead of the viewport render state.
     tmux_state: TmuxState,
 
+    /// Tmux window/pane topology changed. The apprt should query
+    /// the pane list via ghostty_surface_tmux_panes() to get
+    /// the current layout and create/destroy pane surfaces.
+    tmux_windows_changed: void,
+
+    /// A tmux pane surface has been unregistered from the I/O thread.
+    /// The apprt can now safely destroy the pane surface for this pane_id.
+    tmux_pane_unregistered: TmuxPaneUnregistered,
+
     /// Sync with: ghostty_action_tag_e
     pub const Key = enum(c_int) {
         quit,
@@ -413,6 +422,8 @@ pub const Action = union(Key) {
         readonly,
         copy_title_to_clipboard,
         tmux_state,
+        tmux_windows_changed,
+        tmux_pane_unregistered,
 
         test "ghostty.h Action.Key" {
             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");
@@ -638,6 +649,11 @@ pub const TmuxState = enum(c_int) {
     test "ghostty.h TmuxState" {
         try lib.checkGhosttyHEnum(TmuxState, "GHOSTTY_TMUX_STATE_");
     }
+};
+
+pub const TmuxPaneUnregistered = extern struct {
+    pane_id: usize,
+    reg_id: u32,
 };
 
 pub const MouseVisibility = enum(c_int) {

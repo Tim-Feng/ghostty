@@ -1191,6 +1191,26 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
                 log.warn("apprt failed to notify tmux state err={}", .{err});
             };
         },
+
+        .tmux_windows_changed => {
+            _ = self.rt_app.performAction(
+                .{ .surface = self },
+                .tmux_windows_changed,
+                {},
+            ) catch |err| {
+                log.warn("apprt failed to notify tmux windows changed err={}", .{err});
+            };
+        },
+
+        .tmux_pane_unregistered => |unreg| {
+            _ = self.rt_app.performAction(
+                .{ .surface = self },
+                .tmux_pane_unregistered,
+                .{ .pane_id = unreg.pane_id, .reg_id = unreg.reg_id },
+            ) catch |err| {
+                log.warn("apprt failed to notify tmux pane unregistered err={}", .{err});
+            };
+        },
     }
 }
 

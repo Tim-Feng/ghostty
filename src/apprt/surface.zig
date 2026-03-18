@@ -111,6 +111,18 @@ pub const Message = union(enum) {
     /// Tmux control mode state changed. true = entered, false = exited.
     tmux_state: bool,
 
+    /// Tmux window/pane topology changed. Query the pane list via C API.
+    tmux_windows_changed: void,
+
+    /// Ack from the I/O thread that a pane surface has been unregistered.
+    /// Contains pane_id + reg_id so Swift can match against the correct registration.
+    tmux_pane_unregistered: TmuxPaneUnreg,
+
+    pub const TmuxPaneUnreg = struct {
+        pane_id: usize,
+        reg_id: u32,
+    };
+
     pub const ReportTitleStyle = enum {
         csi_21_t,
 
