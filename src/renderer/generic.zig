@@ -2639,7 +2639,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             if (preedit) |preedit_v| preedit: {
                 const range = preedit_range orelse break :preedit;
                 var x = range.x[0];
+                var cursor_x: ?terminal.size.CellCountInt = null;
                 for (preedit_v.codepoints[range.cp_offset..]) |cp| {
+                    if (cp.cursor) cursor_x = x;
+
                     self.addPreeditCell(
                         cp,
                         .{ .x = x, .y = range.y },
@@ -2653,6 +2656,31 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     };
 
                     x += if (cp.wide) 2 else 1;
+                }
+
+                // Render a bar cursor at the IME cursor position.
+                if (cursor_x) |cx| {
+                    const bar_render = self.font_grid.renderGlyph(
+                        self.alloc,
+                        font.sprite_index,
+                        @intFromEnum(font.Sprite.cursor_bar),
+                        .{
+                            .cell_width = 1,
+                            .grid_metrics = self.grid_metrics,
+                        },
+                    ) catch break :preedit;
+                    self.cells.setCursor(.{
+                        .atlas = .grayscale,
+                        .bools = .{ .is_cursor_glyph = true },
+                        .grid_pos = .{ cx, range.y },
+                        .color = .{ state.colors.foreground.r, state.colors.foreground.g, state.colors.foreground.b, 255 },
+                        .glyph_pos = .{ bar_render.glyph.atlas_x, bar_render.glyph.atlas_y },
+                        .glyph_size = .{ bar_render.glyph.width, bar_render.glyph.height },
+                        .bearings = .{
+                            @intCast(bar_render.glyph.offset_x),
+                            @intCast(bar_render.glyph.offset_y),
+                        },
+                    }, .bar);
                 }
             }
 

@@ -118,31 +118,18 @@ pub const StreamHandler = struct {
         };
         log.info("tmux pane surface registered pane_id={} reg_id={}", .{ pane_id, reg_id });
 
-        // MVP initial sync: dump plain viewport text from the viewer's pane
-        // terminal to the new surface. This is text-only (no colors, cursor,
-        // modes, scrollback). Panes will look correct after the first %output
-        // from tmux brings them up to date.
-        //
-        // TODO: Replace with capture-pane -p -e routing or terminal state
-        // clone for full-fidelity initial sync (colors, cursor, modes).
+        // Initial sync: clone the viewer's pane Terminal into the pane
+        // surface's Termio. This gives full-fidelity state: cursor position,
+        // colors, modes, scrollback, charset — everything the viewer has
+        // accumulated from tmux %output since the pane was created.
         const viewer = self.tmux_viewer orelse return;
         const pane = viewer.panes.getPtr(pane_id) orelse return;
-        const screen = pane.terminal.screens.active;
-        const tl = screen.pages.getTopLeft(.viewport);
-        const br = screen.pages.getBottomRight(.viewport) orelse return;
-        var builder: std.Io.Writer.Allocating = .init(self.alloc);
-        defer builder.deinit();
-        screen.dumpString(&builder.writer, .{
-            .tl = tl,
-            .br = br,
-            .unwrap = false,
-        }) catch return;
-        const dump = builder.toOwnedSlice() catch return;
-        defer self.alloc.free(dump);
-        if (dump.len > 0) {
-            pane_termio.processOutput(dump);
-            log.info("tmux pane initial sync (text-only MVP) pane_id={} bytes={}", .{ pane_id, dump.len });
-        }
+        const cloned = pane.terminal.clone(self.alloc) catch |err| {
+            log.err("failed to clone viewer terminal for pane_id={} err={}", .{ pane_id, err });
+            return;
+        };
+        pane_termio.replaceTerminal(cloned);
+        log.info("tmux pane initial sync (terminal clone) pane_id={}", .{pane_id});
     }
 
     /// Unregister a tmux pane surface and send ack with reg_id.

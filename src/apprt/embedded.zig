@@ -917,8 +917,8 @@ pub const Surface = struct {
         };
     }
 
-    pub fn preeditCallback(self: *Surface, preedit_: ?[]const u8) void {
-        _ = self.core_surface.preeditCallback(preedit_) catch |err| {
+    pub fn preeditCallback(self: *Surface, preedit_: ?[]const u8, cursor_offset: ?usize) void {
+        _ = self.core_surface.preeditCallback(preedit_, cursor_offset) catch |err| {
             log.err("error in preedit callback err={}", .{err});
             return;
         };
@@ -2081,7 +2081,19 @@ pub const CAPI = struct {
         ptr: [*]const u8,
         len: usize,
     ) void {
-        surface.preeditCallback(if (len == 0) null else ptr[0..len]);
+        surface.preeditCallback(if (len == 0) null else ptr[0..len], null);
+    }
+
+    /// Set the preedit text with an explicit cursor offset (in UTF-8 codepoints).
+    /// The codepoint at the cursor offset will be rendered with reverse colors.
+    /// cursor_offset is the 0-based index into the codepoint array.
+    export fn ghostty_surface_preedit_with_cursor(
+        surface: *Surface,
+        ptr: [*]const u8,
+        len: usize,
+        cursor_offset: usize,
+    ) void {
+        surface.preeditCallback(if (len == 0) null else ptr[0..len], cursor_offset);
     }
 
     /// Process output bytes as if they were read from the PTY.

@@ -2591,7 +2591,7 @@ fn balancePaddingIfNeeded(self: *Surface) void {
 /// the preedit state correctly.
 ///
 /// The preedit input must be UTF-8 encoded.
-pub fn preeditCallback(self: *Surface, preedit_: ?[]const u8) !void {
+pub fn preeditCallback(self: *Surface, preedit_: ?[]const u8, cursor_offset: ?usize) !void {
     // log.debug("text preeditCallback value={any}", .{preedit_});
 
     // Crash metadata in case we crash in here
@@ -2636,6 +2636,7 @@ pub fn preeditCallback(self: *Surface, preedit_: ?[]const u8) !void {
     const Codepoint = rendererpkg.State.Preedit.Codepoint;
     var codepoints: std.ArrayListUnmanaged(Codepoint) = .{};
     defer codepoints.deinit(self.alloc);
+    var cp_idx: usize = 0;
     while (it.nextCodepoint()) |cp| {
         const width: usize = @intCast(unicode.table.get(cp).width);
 
@@ -2646,8 +2647,13 @@ pub fn preeditCallback(self: *Surface, preedit_: ?[]const u8) !void {
 
         try codepoints.append(
             self.alloc,
-            .{ .codepoint = cp, .wide = width >= 2 },
+            .{
+                .codepoint = cp,
+                .wide = width >= 2,
+                .cursor = if (cursor_offset) |off| cp_idx == off else false,
+            },
         );
+        cp_idx += 1;
     }
 
     // If we have no codepoints, then we're done.

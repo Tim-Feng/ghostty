@@ -257,10 +257,122 @@ pub fn deinit(self: *Terminal, alloc: Allocator) void {
     self.* = undefined;
 }
 
+/// Clone this terminal into a new, independently owned Terminal.
+/// This performs a deep copy of screens (primary + alternate if active),
+/// cursor, modes, colors, tabstops, charset, scrolling region, and all
+/// other terminal state. The clone uses `alloc` for all allocations.
+///
+/// This is used for tmux pane rendering: the viewer maintains a Terminal
+/// per tmux pane, and we clone it to bootstrap a new pane surface with
+/// full-fidelity initial state (cursor position, colors, modes, etc.).
+pub fn clone(self: *const Terminal, alloc: Allocator) !Terminal {
+    // Clone primary screen (full content including scrollback).
+    // We build the ScreenSet manually to avoid double-free on errdefer:
+    // once a screen is in the ScreenSet, only screens.deinit should free it.
+    const primary_screen = try alloc.create(Screen);
+    errdefer alloc.destroy(primary_screen);
+    const src_primary = self.screens.get(.primary).?;
+    primary_screen.* = try src_primary.clone(
+        alloc,
+        .{ .screen = .{ .y = 0 } },
+        null,
+    );
+    // Restore screen-level state that Screen.clone doesn't copy
+    restoreScreenState(primary_screen, src_primary);
+
+    // Build ScreenSet — from this point, screens owns primary_screen
+    var screens: ScreenSet = .{
+        .active_key = self.screens.active_key,
+        .active = primary_screen,
+        .all = .init(.{ .primary = primary_screen }),
+    };
+    // Single errdefer for the entire ScreenSet (handles all screens)
+    errdefer screens.deinit(alloc);
+
+    // Clone alternate screen if it exists
+    if (self.screens.get(.alternate)) |alt| {
+        const alt_screen = try alloc.create(Screen);
+        errdefer alloc.destroy(alt_screen);
+        alt_screen.* = try alt.clone(
+            alloc,
+            .{ .screen = .{ .y = 0 } },
+            null,
+        );
+        restoreScreenState(alt_screen, alt);
+        screens.all.put(.alternate, alt_screen);
+
+        // If alternate is active, point active to it
+        if (self.screens.active_key == .alternate) {
+            screens.active = alt_screen;
+        }
+    }
+
+    // Clone tabstops
+    var tabstops: Tabstops = try .init(alloc, self.cols, TABSTOP_INTERVAL);
+    errdefer tabstops.deinit(alloc);
+    // Copy actual tabstop state over the defaults
+    @memcpy(&tabstops.prealloc_stops, &self.tabstops.prealloc_stops);
+    if (self.tabstops.dynamic_stops.len > 0) {
+        if (tabstops.dynamic_stops.len > 0) alloc.free(tabstops.dynamic_stops);
+        tabstops.dynamic_stops = try alloc.dupe(@TypeOf(self.tabstops.dynamic_stops[0]), self.tabstops.dynamic_stops);
+    }
+
+    // Clone pwd
+    var pwd: std.ArrayList(u8) = .empty;
+    errdefer pwd.deinit(alloc);
+    if (self.pwd.items.len > 0) {
+        try pwd.appendSlice(alloc, self.pwd.items);
+    }
+
+    return .{
+        .screens = screens,
+        .tabstops = tabstops,
+        .rows = self.rows,
+        .cols = self.cols,
+        .width_px = self.width_px,
+        .height_px = self.height_px,
+        .scrolling_region = self.scrolling_region,
+        .pwd = pwd,
+        .colors = self.colors,
+        .previous_char = self.previous_char,
+        .modes = self.modes,
+        .mouse_shape = self.mouse_shape,
+        .status_display = self.status_display,
+        .flags = self.flags,
+    };
+}
+
 /// Return a terminal.Stream that can process VT streams and update this
 /// terminal state. The streams will only process read-only data that
 /// modifies terminal state. Sequences that query or otherwise require
 /// output will be ignored.
+/// Restore screen-level state that Screen.clone() doesn't copy.
+/// Screen.clone rebuilds cursor x/y/page_pin/page_row/page_cell but
+/// drops cursor_style, pending_wrap, protected, style, style_id,
+/// hyperlink_id, semantic_content, and other cursor fields.
+fn restoreScreenState(dst: *Screen, src: *const Screen) void {
+    // Active cursor fields not preserved by Screen.clone
+    dst.cursor.cursor_style = src.cursor.cursor_style;
+    dst.cursor.pending_wrap = src.cursor.pending_wrap;
+    dst.cursor.protected = src.cursor.protected;
+    dst.cursor.style = src.cursor.style;
+    dst.cursor.style_id = src.cursor.style_id;
+    dst.cursor.hyperlink_id = src.cursor.hyperlink_id;
+    dst.cursor.hyperlink_implicit_id = src.cursor.hyperlink_implicit_id;
+    dst.cursor.semantic_content = src.cursor.semantic_content;
+    dst.cursor.semantic_content_clear_eol = src.cursor.semantic_content_clear_eol;
+    // Note: cursor.hyperlink (heap-allocated) is NOT cloned to avoid
+    // double-free. It will be null on the clone, which is acceptable
+    // since the pane surface will get its own hyperlink state from %output.
+
+    // Other screen state not in Screen.clone
+    dst.saved_cursor = src.saved_cursor;
+    dst.charset = src.charset;
+    dst.protected_mode = src.protected_mode;
+    dst.kitty_keyboard = src.kitty_keyboard;
+    dst.semantic_prompt = src.semantic_prompt;
+}
+
 pub fn vtStream(self: *Terminal) ReadonlyStream {
     return .initAlloc(self.gpa(), self.vtHandler());
 }

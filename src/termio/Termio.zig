@@ -672,6 +672,33 @@ pub fn focusGained(self: *Termio, td: *ThreadData, focused: bool) !void {
     try self.backend.focusGained(td, focused);
 }
 
+/// Replace this Termio's terminal state with a cloned terminal.
+/// This is used for tmux pane initial sync: the viewer's pane Terminal
+/// is cloned and swapped into the pane surface's Termio, giving the
+/// surface full-fidelity initial state (cursor, colors, modes, scrollback).
+/// The swap happens under the renderer mutex to ensure consistency.
+pub fn replaceTerminal(self: *Termio, new_terminal: terminalpkg.Terminal) void {
+    self.renderer_state.mutex.lock();
+    defer self.renderer_state.mutex.unlock();
+
+    // Deinit the old terminal (frees pages, tabstops, pwd)
+    const alloc = self.terminal.screens.active.alloc;
+    self.terminal.deinit(alloc);
+
+    // Assign the cloned terminal in-place. renderer_state.terminal
+    // is a pointer to self.terminal, so it remains valid.
+    self.terminal = new_terminal;
+
+    // Mark everything dirty so the renderer does a full redraw
+    self.terminal.flags.dirty = .{
+        .palette = true,
+        .reverse_colors = true,
+    };
+
+    // Wake the renderer so the new content is drawn immediately
+    self.renderer_wakeup.notify() catch {};
+}
+
 /// Process output from the pty. This is the manual API that users can
 /// call with pty data but it is also called by the read thread when using
 /// an exec subprocess.

@@ -51,6 +51,9 @@ pub const Preedit = struct {
     pub const Codepoint = struct {
         codepoint: u21,
         wide: bool = false,
+        /// If true, this codepoint is at the IME cursor position and
+        /// should be rendered with a visual indicator (e.g. reverse colors).
+        cursor: bool = false,
     };
 
     /// Deinit this preedit that was cre
