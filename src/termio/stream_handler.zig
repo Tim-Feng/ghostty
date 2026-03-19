@@ -118,18 +118,12 @@ pub const StreamHandler = struct {
         };
         log.info("tmux pane surface registered pane_id={} reg_id={}", .{ pane_id, reg_id });
 
-        // Initial sync: clone the viewer's pane Terminal into the pane
-        // surface's Termio. This gives full-fidelity state: cursor position,
-        // colors, modes, scrollback, charset — everything the viewer has
-        // accumulated from tmux %output since the pane was created.
-        const viewer = self.tmux_viewer orelse return;
-        const pane = viewer.panes.getPtr(pane_id) orelse return;
-        const cloned = pane.terminal.clone(self.alloc) catch |err| {
-            log.err("failed to clone viewer terminal for pane_id={} err={}", .{ pane_id, err });
-            return;
-        };
-        pane_termio.replaceTerminal(cloned);
-        log.info("tmux pane initial sync (terminal clone) pane_id={}", .{pane_id});
+        // TODO(Phase 2): Initial sync via Terminal.clone() is disabled because
+        // the cloned viewport position doesn't match the active screen area,
+        // causing the pane to appear blank or scrolled to the wrong position.
+        // For now, the pane starts empty and %output fills in new content.
+        // Re-enable once we fix the viewport after clone.
+        log.info("tmux pane registered (no initial sync) pane_id={}", .{pane_id});
     }
 
     /// Unregister a tmux pane surface and send ack with reg_id.

@@ -1925,17 +1925,19 @@ pub const CAPI = struct {
         const writer = stream.writer();
 
         if (key_type == 0) {
-            // Literal text: send-keys -l -t %<pane_id> "<text>"
-            writer.print("send-keys -l -t %{d} \"", .{pane_id}) catch return;
-            // Escape double quotes and backslashes in the text
+            // Literal text: send-keys -l -t %<pane_id> '<text>'
+            // Use single quotes so spaces and special chars are preserved
+            // literally by tmux's command parser. Single quotes inside the
+            // text are escaped as '\'' (end quote, escaped quote, start quote).
+            writer.print("send-keys -l -t %{d} '", .{pane_id}) catch return;
             for (data) |byte| {
-                switch (byte) {
-                    '"' => writer.writeAll("\\\"") catch return,
-                    '\\' => writer.writeAll("\\\\") catch return,
-                    else => writer.writeByte(byte) catch return,
+                if (byte == '\'') {
+                    writer.writeAll("'\\''") catch return;
+                } else {
+                    writer.writeByte(byte) catch return;
                 }
             }
-            writer.writeAll("\"\n") catch return;
+            writer.writeAll("'\n") catch return;
         } else {
             // Key name: send-keys -t %<pane_id> <key_name>
             writer.print("send-keys -t %{d} {s}\n", .{ pane_id, data }) catch return;
