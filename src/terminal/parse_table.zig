@@ -145,6 +145,10 @@ fn genTable() Table {
         single(&result, 0x5E, source, .sos_pm_apc_string, .none);
         single(&result, 0x5F, source, .sos_pm_apc_string, .none);
 
+        // ESC k ... ST: tmux/screen set-title sequence. Absorb content
+        // like SOS/PM/APC to prevent title text leaking to the screen.
+        single(&result, 0x6B, source, .sos_pm_apc_string, .none);
+
         // => dcs_entry
         single(&result, 0x50, source, .dcs_entry, .none);
 

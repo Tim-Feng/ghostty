@@ -482,7 +482,6 @@ pub const StreamHandler = struct {
                 // pane terminal, which is intentional redundancy).
                 if (tmux == .output) {
                     if (self.tmux_pane_surfaces.getPtr(tmux.output.pane_id)) |entry| {
-                        log.info("tmux routing %output to pane surface pane_id={} bytes={}", .{ tmux.output.pane_id, tmux.output.data.len });
                         entry.termio_ptr.processOutput(tmux.output.data);
                     } else {
                         log.info("tmux %output pane_id={} not registered (registered count={})", .{ tmux.output.pane_id, self.tmux_pane_surfaces.count() });
