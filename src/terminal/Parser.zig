@@ -260,21 +260,20 @@ pub fn next(self: *Parser, c: u8) [3]?Action {
     // log.info("next: {x}", .{c});
 
     // tmux control mode fix: the %output notifications carry raw terminal
-    // data including ESC sequences and UTF-8 bytes (0x80+). The standard
-    // VT parser "anywhere" transitions would exit dcs_passthrough on these
-    // bytes (ESC→escape, 0x80-0x8F→ground, 0x9B→csi_entry, etc.), which
-    // prematurely unhooks the DCS and kills the tmux control session.
+    // data including ESC sequences and high bytes that would otherwise
+    // trigger "anywhere" transitions and prematurely unhook the DCS.
     //
-    // Additionally, bytes 0xA0-0xFF have no explicit "anywhere" transition,
-    // so they stay in dcs_passthrough but with a .none action — silently
-    // dropping them. These include UTF-8 leading bytes (0xC0-0xFF) and
-    // continuation bytes (0xA0-0xBF) that tmux sends raw in %output.
+    // With -CC mode, the DCS stream contains BOTH the control protocol
+    // text AND raw terminal escape sequences (for rendering the tmux UI).
+    // These include ESC sequences and even ESC \ (ST) as part of inner
+    // OSC/APC terminators — NOT as the DCS terminator.
+    //
+    // Therefore, the parser NEVER exits dcs_passthrough based on byte
+    // content for tmux DCS. Exit is handled semantically via the tmux
+    // control parser (%client-detached → viewer.Action.exit → tmuxExit).
     //
     // This override ONLY applies to tmux DCS 1000p (identified at entry).
     // Non-tmux DCS (XTGETTCAP, DECRQSS, etc.) use standard VT transitions.
-    // The tmux control parser (control.zig) handles its own protocol framing
-    // and will return .exit when the connection should end, which triggers
-    // dcs_unhook via the stream handler.
     const next_state, const action = if (self.tmux_dcs and
         self.state == .dcs_passthrough and
         (effect.state != .dcs_passthrough or effect.action == .none))
@@ -1128,6 +1127,75 @@ test "dcs: too many params" {
     try testing.expect(a[0] == null);
     try testing.expect(a[1] == null);
     try testing.expect(a[2] == null);
+}
+
+test "tmux DCS: ESC stays in passthrough (not ST)" {
+    // In tmux DCS -CC mode, ESC \ inside the stream is part of inner
+    // escape sequences (e.g. OSC terminators), NOT the DCS terminator.
+    // The parser must keep ALL bytes in dcs_passthrough. DCS exit is
+    // handled semantically via %client-detached → viewer.Action.exit.
+    var p = init();
+
+    // Enter DCS 1000p
+    _ = p.next(0x1B);
+    _ = p.next('P');
+    _ = p.next('1');
+    _ = p.next('0');
+    _ = p.next('0');
+    _ = p.next('0');
+    _ = p.next('p');
+    try testing.expect(p.state == .dcs_passthrough);
+    try testing.expect(p.tmux_dcs == true);
+
+    // ESC should stay in dcs_passthrough (overridden to put)
+    {
+        const a = p.next(0x1B);
+        try testing.expect(p.state == .dcs_passthrough);
+        try testing.expect(a[1].? == .dcs_put);
+    }
+
+    // '\' after ESC should also stay (it's inner ST, not DCS ST)
+    {
+        const a = p.next('\\');
+        try testing.expect(p.state == .dcs_passthrough);
+        try testing.expect(a[1].? == .dcs_put);
+    }
+
+    // 0x9C should also stay (override blocks 8-bit ST too)
+    {
+        const a = p.next(0x9C);
+        try testing.expect(p.state == .dcs_passthrough);
+        try testing.expect(a[1].? == .dcs_put);
+    }
+}
+
+test "tmux DCS: high bytes stay in passthrough" {
+    // Bytes 0x80-0x9B, 0x9D-0xFF should NOT exit tmux DCS.
+    var p = init();
+
+    // Enter DCS 1000p
+    _ = p.next(0x1B);
+    _ = p.next('P');
+    _ = p.next('1');
+    _ = p.next('0');
+    _ = p.next('0');
+    _ = p.next('0');
+    _ = p.next('p');
+    try testing.expect(p.state == .dcs_passthrough);
+
+    // 0x80 (normally triggers anywhere transition) should stay
+    {
+        const a = p.next(0x80);
+        try testing.expect(p.state == .dcs_passthrough);
+        try testing.expect(a[1].? == .dcs_put);
+    }
+
+    // 0xC0 (UTF-8 leading byte) should stay
+    {
+        const a = p.next(0xC0);
+        try testing.expect(p.state == .dcs_passthrough);
+        try testing.expect(a[1].? == .dcs_put);
+    }
 }
 
 test "esc k: tmux/screen set-title absorbed" {

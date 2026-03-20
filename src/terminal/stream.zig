@@ -701,6 +701,17 @@ pub fn Stream(comptime Handler: type) type {
             // that causes weird behavior in some tests- I'm not sure if they
             // miscompile or it's just very counter-intuitive comptime stuff,
             // but regardless, this is the easy solution.
+            // If tmux control mode exited via %exit, force the parser out
+            // of dcs_passthrough so subsequent shell output is processed
+            // normally instead of being swallowed by the DCS handler.
+            if (@hasField(T, "tmux_force_dcs_exit")) {
+                if (self.handler.tmux_force_dcs_exit) {
+                    self.handler.tmux_force_dcs_exit = false;
+                    self.parser.tmux_dcs = false;
+                    self.parser.state = .ground;
+                }
+            }
+
             const actions = @call(.always_inline, Parser.next, .{ &self.parser, c });
 
             for (actions) |action_opt| {

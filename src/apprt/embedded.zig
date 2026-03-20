@@ -1951,6 +1951,30 @@ pub const CAPI = struct {
         );
     }
 
+    /// Send a raw tmux command through the control mode channel.
+    /// The command string should NOT include a trailing newline.
+    /// Example: "detach-client", "select-pane -t %42"
+    export fn ghostty_surface_tmux_command(
+        host_surface: *Surface,
+        cmd_ptr: [*]const u8,
+        cmd_len: usize,
+    ) void {
+        const cmd = cmd_ptr[0..cmd_len];
+        const alloc = host_surface.core_surface.alloc;
+
+        // Allocate cmd + newline dynamically to handle arbitrarily long commands
+        const full = alloc.alloc(u8, cmd_len + 1) catch return;
+        defer alloc.free(full);
+        @memcpy(full[0..cmd_len], cmd);
+        full[cmd_len] = '\n';
+
+        const Message = @import("../termio/message.zig").Message;
+        host_surface.core_surface.io.queueMessage(
+            Message.writeReq(alloc, full) catch return,
+            .unlocked,
+        );
+    }
+
     /// Tell the surface that it needs to schedule a render
     export fn ghostty_surface_refresh(surface: *Surface) void {
         surface.refresh();

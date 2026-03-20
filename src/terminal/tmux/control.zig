@@ -438,6 +438,12 @@ pub const Parser = struct {
             // Important: do not clear buffer here since client/name point to it
             self.state = .idle;
             return .{ .client_session_changed = .{ .client = client, .session_id = session_id, .name = name } };
+        } else if (std.mem.eql(u8, cmd, "%exit")) {
+            // The tmux client is exiting (detach, error, etc.).
+            // Note: %exit may include a reason string which we ignore.
+            self.buffer.clearRetainingCapacity();
+            self.state = .idle;
+            return .exit;
         } else {
             // Unknown notification, log it and return to idle state.
             log.warn("unknown tmux control mode notification={s}", .{cmd});

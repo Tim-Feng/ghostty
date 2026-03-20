@@ -78,6 +78,11 @@ pub const StreamHandler = struct {
     tmux_pane_surfaces: if (tmux_enabled) std.AutoArrayHashMapUnmanaged(usize, TmuxPaneEntry) else void =
         if (tmux_enabled) .{} else {},
 
+    /// Set by tmuxExit() to signal the VT stream that the parser should
+    /// leave dcs_passthrough on the next byte. The stream checks this flag
+    /// before calling parser.next() and resets the parser state if set.
+    tmux_force_dcs_exit: if (tmux_enabled) bool else void = if (tmux_enabled) false else {},
+
     /// This is set to true when a message was written to the termio
     /// mailbox. This can be used by callers to determine if they need
     /// to wake up the termio thread.
@@ -94,6 +99,28 @@ pub const StreamHandler = struct {
 
     /// Entry in the tmux pane surfaces map.
     pub const TmuxPaneEntry = struct { termio_ptr: *termio.Termio, reg_id: u32 };
+
+    /// Shared tmux exit cleanup: notify apprt and free viewer.
+    /// Called from both DCS-level .exit (cmd.tmux == .exit) and
+    /// semantic-level exit (viewer.Action.exit from %client-detached).
+    /// Guarded: only sends tmux_state=false once (viewer != null).
+    fn tmuxExit(self: *StreamHandler) void {
+        if (comptime !tmux_enabled) return;
+        // Guard against double exit (semantic + DCS both firing)
+        if (self.tmux_viewer == null) return;
+        self.surfaceMessageWriter(.{ .tmux_state = false });
+        if (self.tmux_viewer) |viewer| {
+            viewer.deinit();
+            self.alloc.destroy(viewer);
+            self.tmux_viewer = null;
+        }
+        // Signal the VT stream to force the parser out of dcs_passthrough.
+        // The blanket override keeps the parser in dcs_passthrough forever,
+        // so we need this flag to break out after tmux exits.
+        self.tmux_force_dcs_exit = true;
+        self.dcs.deinit();
+        self.dcs = .{};
+    }
 
     pub fn deinit(self: *StreamHandler) void {
         self.apc.deinit();
@@ -445,18 +472,7 @@ pub const StreamHandler = struct {
                     },
 
                     .exit => {
-                        // Notify the apprt that we exited tmux control mode
-                        self.surfaceMessageWriter(.{ .tmux_state = false });
-
-                        // Free our viewer state if we have one
-                        if (self.tmux_viewer) |viewer| {
-                            viewer.deinit();
-                            self.alloc.destroy(viewer);
-                            self.tmux_viewer = null;
-                        }
-
-                        // And always break since we assert below
-                        // that we're not handling an exit command.
+                        self.tmuxExit();
                         break :tmux;
                     },
 
@@ -492,10 +508,9 @@ pub const StreamHandler = struct {
                     log.info("tmux viewer action={f}", .{action});
                     switch (action) {
                         .exit => {
-                            // We ignore this because we will fully exit when
-                            // our DCS connection ends. We may want to handle
-                            // this in the future to notify our GUI we're
-                            // disconnected though.
+                            // Semantic exit from viewer (e.g. %client-detached).
+                            // Don't wait for DCS unhook — notify apprt now.
+                            self.tmuxExit();
                         },
 
                         .command => |command| {

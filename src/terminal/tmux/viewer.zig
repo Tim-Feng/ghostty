@@ -518,11 +518,12 @@ pub const Viewer = struct {
             // We don't use window names for anything, currently.
             .window_renamed => {},
 
-            // This is for other clients, which we don't do anything about.
-            // For us, we'll get `exit` or `session_changed`, respectively.
-            .client_detached,
-            .client_session_changed,
-            => {},
+            // When our client is detached, treat it as exit.
+            // We can't assume a separate %exit will follow.
+            .client_detached => return self.defunct(),
+
+            // Other client's session changes don't affect us.
+            .client_session_changed => {},
         }
 
         // After processing commands, we add our next command to
