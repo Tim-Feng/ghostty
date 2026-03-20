@@ -1129,3 +1129,49 @@ test "dcs: too many params" {
     try testing.expect(a[1] == null);
     try testing.expect(a[2] == null);
 }
+
+test "esc k: tmux/screen set-title absorbed" {
+    // ESC k <title> ESC \ should be absorbed without printing.
+    // This is the tmux/screen set-window-title sequence.
+    var p = init();
+
+    // ESC k enters sos_pm_apc_string
+    _ = p.next(0x1B);
+    {
+        const a = p.next('k');
+        try testing.expect(p.state == .sos_pm_apc_string);
+        // Entry action is apc_start
+        try testing.expect(a[2].? == .apc_start);
+    }
+
+    // Title content "echo" should produce apc_put, NOT print
+    for ("echo") |byte| {
+        const a = p.next(byte);
+        try testing.expect(p.state == .sos_pm_apc_string);
+        try testing.expect(a[0] == null); // no exit action
+        try testing.expect(a[1].? == .apc_put); // absorbed as APC content, not printed
+        try testing.expect(a[2] == null); // no entry action
+    }
+
+    // ESC triggers transition to escape state
+    {
+        const a = p.next(0x1B);
+        try testing.expect(p.state == .escape);
+        // Exit from sos_pm_apc_string produces apc_end
+        try testing.expect(a[0].? == .apc_end);
+    }
+
+    // \ (ST) returns to ground via esc_dispatch
+    {
+        const a = p.next('\\');
+        try testing.expect(p.state == .ground);
+        try testing.expect(a[1].? == .esc_dispatch);
+    }
+
+    // After ST, normal text should print again
+    {
+        const a = p.next('A');
+        try testing.expect(p.state == .ground);
+        try testing.expect(a[1].? == .print);
+    }
+}
